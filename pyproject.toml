@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ai-patcher-pro"
+version = "2.0.0"
+description = "Инструмент для безопасного применения ИИ-патчей с 5-уровневым нечётким поиском"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "AI Patcher Pro Team"},
+]
+keywords = ["ai", "patch", "llm", "chatgpt", "claude", "code-review"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+dependencies = [
+    "PyQt6>=6.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+build = [
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+ai-patcher-pro = "ai_patcher_pro.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["ai_patcher_pro*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
