@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.spec
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# AI Patcher Pro
+.ai_backups/
+
+# Binaries (build locally)
+*.exe
+AI-Patcher-Pro-Linux-x64
+
+# Secrets - NEVER commit
+*_push.py
+.env
+id_ed25519
+id_dropbear
