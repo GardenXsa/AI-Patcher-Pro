@@ -1,8 +1,11 @@
 """
 Карточка операции — визуальное отображение одной операции патча.
 
-ИСПРАВЛЕНО: хайлайтеры хранятся в CodeViewerFactory для предотвращения
-garbage collection. Также исправлена логика подсчёта diff-строк.
+Визуальные статусы:
+- НАЙДЕНО (голубой) — код найден при анализе, патч ещё НЕ применён к диску
+- ПРИМЕНЕНО (зелёный) — патч записан на диск
+- УЖЕ БЫЛО (серый) — изменения уже присутствовали
+- ОШИБКА (красный) — не удалось найти или применить
 """
 
 import json
@@ -19,6 +22,40 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from ai_patcher_pro.gui.code_viewer import CodeViewerFactory
+
+
+# ─────────────── Цвета и тексты статусов ───────────────
+
+ST_STYLES = {
+    "success": {
+        "card_obj": "card_preview",       # голубая рамка — превью
+        "color": "#00bcd4",               # циан
+        "text": "НАЙДЕНО",
+        "icon": "?",
+        "sub": "Изменения в превью (ещё не записаны на диск)",
+    },
+    "applied": {
+        "card_obj": "card_success",       # зелёная рамка — применено
+        "color": "#27ae60",
+        "text": "ПРИМЕНЕНО",
+        "icon": "?",
+        "sub": "Патч успешно записан на диск",
+    },
+    "already_applied": {
+        "card_obj": "card_info",          # синяя рамка
+        "color": "#3498db",
+        "text": "УЖЕ БЫЛО",
+        "icon": "i",
+        "sub": "Изменения уже присутствовали в файле",
+    },
+    "error": {
+        "card_obj": "card_error",         # красная рамка
+        "color": "#c0392b",
+        "text": "ОШИБКА",
+        "icon": "X",
+        "sub": "Не удалось применить операцию",
+    },
+}
 
 
 class OperationCard(QFrame):
@@ -47,18 +84,14 @@ class OperationCard(QFrame):
         op = self.item["op"]
         status = self.item["status"]
 
-        if status == "success":
-            self.setObjectName("card_success")
-        elif status == "error":
-            self.setObjectName("card_error")
-        else:
-            self.setObjectName("card_info")
+        style = ST_STYLES.get(status, ST_STYLES["error"])
+        self.setObjectName(style["card_obj"])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
 
-        # Заголовок
+        # ── Заголовок ──
         header = QHBoxLayout()
 
         path_str = op.get("path") or op.get("file", "???")
@@ -69,21 +102,14 @@ class OperationCard(QFrame):
         )
         header.addWidget(lbl_title)
 
-        st_color = {
-            "success": "#27ae60",
-            "error": "#c0392b",
-            "already_applied": "#3498db",
-        }
-        st_text = {
-            "success": "УСПЕХ",
-            "error": "ОШИБКА",
-            "already_applied": "ПРОПУСК",
-        }
-
-        lbl_status = QLabel(st_text.get(status, "???"))
+        # Бейдж статуса
+        lbl_status = QLabel(style["text"])
         lbl_status.setStyleSheet(
-            f"color: {st_color.get(status, '#aaaaaa')}; "
-            f"font-weight: bold; font-size: 12px; margin-left: 10px;"
+            f"color: {style['color']}; "
+            f"font-weight: bold; font-size: 12px; margin-left: 10px; "
+            f"background-color: {style['color']}22; "
+            f"padding: 2px 10px; border-radius: 4px; "
+            f"border: 1px solid {style['color']}44;"
         )
         header.addWidget(lbl_status)
         header.addStretch()
@@ -113,16 +139,25 @@ class OperationCard(QFrame):
 
         layout.addLayout(header)
 
-        # Содержимое по статусу
+        # ── Подсказка под бейджем ──
+        lbl_sub = QLabel(style["sub"])
+        lbl_sub.setStyleSheet(
+            f"color: {style['color']}88; font-size: 11px; font-style: italic; margin-top: -8px;"
+        )
+        layout.addWidget(lbl_sub)
+
+        # ── Содержимое по статусу ──
         if status == "success":
             self._render_success(layout)
+        elif status == "applied":
+            self._render_applied(layout)
         elif status == "already_applied":
             self._render_already_applied(layout)
         elif status == "error":
             self._render_error(layout)
 
     def _render_success(self, layout: QVBoxLayout) -> None:
-        """Отрисовка карточки успешной операции."""
+        """Отрисовка карточки найденной операции (превью, ещё не на диске)."""
         if self.item.get("search_method"):
             lbl_method = QLabel(f"Метод поиска: {self.item['search_method']}")
             lbl_method.setStyleSheet(
@@ -155,7 +190,52 @@ class OperationCard(QFrame):
 
         diff_text.setHtml(html)
 
-        # ИСПРАВЛЕНО: корректный подсчёт строк diff для высоты
+        diff_lines = len(
+            [
+                l
+                for l in self.item["diff"]
+                if not (l.startswith("---") or l.startswith("+++") or l.startswith("@@"))
+            ]
+        )
+        extra_h = 22 if any(len(l) > 100 for l in self.item["diff"]) else 0
+        diff_text.setFixedHeight(min(400, max(50, diff_lines * 18 + 24 + extra_h)))
+
+        layout.addWidget(diff_text)
+
+    def _render_applied(self, layout: QVBoxLayout) -> None:
+        """Отрисовка карточки применённой операции (записано на диск)."""
+        if self.item.get("search_method"):
+            lbl_method = QLabel(f"Метод поиска: {self.item['search_method']}")
+            lbl_method.setStyleSheet(
+                "color: #8e44ad; font-style: italic; font-size: 12px;"
+            )
+            layout.addWidget(lbl_method)
+
+        diff_text = QTextEdit()
+        diff_text.setReadOnly(True)
+        diff_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+
+        html = "<pre style='font-family: Consolas, monospace; font-size: 13px; margin: 0;'>"
+        for line in self.item["diff"]:
+            line = line.replace("<", "&lt;").replace(">", "&gt;")
+            if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
+                continue
+            if line.startswith("+"):
+                html += (
+                    f"<div style='background-color: rgba(39, 174, 96, 0.15); "
+                    f"color: #2ecc71; padding: 2px;'>{line}</div>"
+                )
+            elif line.startswith("-"):
+                html += (
+                    f"<div style='background-color: rgba(192, 57, 43, 0.15); "
+                    f"color: #e74c3c; padding: 2px;'>{line}</div>"
+                )
+            else:
+                html += f"<div style='color: #d4d4d4; padding: 2px;'>{line}</div>"
+        html += "</pre>"
+
+        diff_text.setHtml(html)
+
         diff_lines = len(
             [
                 l

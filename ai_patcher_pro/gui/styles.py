@@ -90,14 +90,24 @@ QComboBox::drop-down { border: none; }
 
 QWidget#sidebar { background-color: #252526; }
 
+/* Карточки операций */
 QFrame#card {
     background-color: #252526;
     border: 1px solid #3c3c3c;
     border-radius: 10px;
 }
-QFrame#card_success { border: 1px solid #27ae60; }
-QFrame#card_error { border: 1px solid #c0392b; }
-QFrame#card_info { border: 1px solid #3498db; }
+/* Превью — голубая рамка (код найден, но ещё не на диске) */
+QFrame#card_preview {
+    background-color: #252526;
+    border: 2px solid #00bcd4;
+    border-radius: 10px;
+}
+/* Успех — зелёная рамка (код записан на диск) */
+QFrame#card_success { border: 2px solid #27ae60; }
+/* Ошибка — красная рамка */
+QFrame#card_error { border: 2px solid #c0392b; }
+/* Инфо — синяя рамка (уже применено) */
+QFrame#card_info { border: 2px solid #3498db; }
 
 QLabel#accent_title { color: #007acc; font-size: 16px; font-weight: bold; letter-spacing: 1px; }
 QLabel#status_warning { color: #f39c12; font-weight: bold; font-size: 12px; }
@@ -113,6 +123,20 @@ QFrame#cmd_log_frame {
 
 /* ИНДИКАТОР АКТИВНОСТИ */
 QFrame#activity_frame {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+}
+
+/* ПАЙПЛАЙН ФАЗ */
+QFrame#pipeline_frame {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+}
+
+/* СВОДНЫЙ БАННЕР */
+QFrame#summary_frame {
     background-color: #1a1a1a;
     border: 1px solid #2a2a2a;
     border-radius: 6px;

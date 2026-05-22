@@ -5,5 +5,5 @@ AI Patcher Pro - Инструмент для безопасного примен
 системой бэкапов и визуальным diff-превью.
 """
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 __author__ = "AI Patcher Pro Team"

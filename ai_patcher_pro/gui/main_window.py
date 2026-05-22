@@ -1,12 +1,17 @@
 """
 Главное окно приложения AI Patcher Pro.
 
-Поддерживает:
-- Выполнение консольных команд из патча (after_analysis / after_apply)
-- Обязательный запуск от имени администратора
-- Лог выполнения команд с возможностью копирования
-- Диалог подтверждения перед выполнением команд
-- Реальное время статусов и потоковый вывод команд
+Чёткий пайплайн статусов:
+1. ПАРСИНГ — разбор JSON
+2. АНАЛИЗ — поиск кода, генерация превью (карточки показывают "НАЙДЕНО")
+3. КОД НА ДИСК — запись файлов (карточки обновляются на "ПРИМЕНЕНО")
+4. КОМАНДЫ — выполнение after_apply команд
+5. ГОТОВО — итоговый результат
+
+Ключевые визуальные элементы:
+- Пайплайн-индикатор фаз в сайдбаре
+- Сводный баннер после каждой фазы
+- Карточки с чётким разделением "превью" vs "применено"
 """
 
 import os
@@ -32,6 +37,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QApplication,
     QTabWidget,
+    QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
@@ -48,19 +54,19 @@ from ai_patcher_pro.gui.scanner_tab import ScannerTab
 from ai_patcher_pro.utils.file_io import read_file_safe
 
 
-# ─────────────────────── Цвета стадий ───────────────────────
+# ─────────────────────── Цвета стадий лога ───────────────────────
 
 STAGE_COLORS = {
-    "parse": "#3498db",      # Синий — парсинг
-    "load": "#f39c12",       # Оранжевый — загрузка файла
-    "search": "#9b59b6",     # Фиолетовый — поиск
-    "apply": "#2ecc71",      # Зелёный — применение
-    "diff": "#1abc9c",       # Бирюзовый — генерация diff
-    "cmd_start": "#f39c12",  # Оранжевый — команда началась
-    "cmd_stdout": "#2ecc71", # Зелёный — вывод stdout
-    "cmd_stderr": "#e74c3c", # Красный — вывод stderr
-    "cmd_done": "#27ae60",   # Зелёный — команда завершена
-    "done": "#27ae60",       # Зелёный — завершено
+    "parse": "#3498db",
+    "load": "#f39c12",
+    "search": "#9b59b6",
+    "apply": "#2ecc71",
+    "diff": "#1abc9c",
+    "cmd_start": "#f39c12",
+    "cmd_stdout": "#2ecc71",
+    "cmd_stderr": "#e74c3c",
+    "cmd_done": "#27ae60",
+    "done": "#27ae60",
 }
 
 STAGE_LABELS = {
@@ -76,14 +82,31 @@ STAGE_LABELS = {
     "done": "ГОТОВО",
 }
 
+# ─────────────────────── Фазы пайплайна ───────────────────────
+
+PIPELINE_STEPS = [
+    ("parse", "Парсинг"),
+    ("analysis", "Анализ"),
+    ("write", "Код на диск"),
+    ("commands", "Команды"),
+    ("done", "Готово"),
+]
+
+PIPELINE_COLORS = {
+    "inactive": "#333333",
+    "active": "#00bcd4",
+    "completed": "#27ae60",
+    "error": "#c0392b",
+}
+
 
 class AIPatcherPro(QMainWindow):
     """Главное окно приложения AI Patcher Pro."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AI Patcher Pro v3.1")
-        self.resize(1300, 800)
+        self.setWindowTitle("AI Patcher Pro v3.2")
+        self.resize(1300, 850)
         self.setAcceptDrops(True)
 
         self.workspace = os.getcwd()
@@ -97,12 +120,18 @@ class AIPatcherPro(QMainWindow):
         self.commands_after_apply: list = []
         self.command_results: list = []
 
+        # Флаг: патч записан на диск
+        self._patch_written = False
+
         self.backup_mgr = BackupManager(self.workspace)
 
         # Анимация пульсации индикатора
         self._pulse_state = False
         self._pulse_timer = QTimer(self)
         self._pulse_timer.timeout.connect(self._toggle_pulse)
+
+        # Текущая фаза пайплайна
+        self._current_phase = "parse"
 
         self._setup_ui()
         self.backup_mgr.init_backup_dir()
@@ -133,6 +162,52 @@ class AIPatcherPro(QMainWindow):
         self.lbl_activity_dot.setStyleSheet(
             f"background-color: {color}; border-radius: 7px;"
         )
+
+    # ─────────────────── Пайплайн фаз ───────────────────
+
+    def _set_pipeline_phase(self, phase: str) -> None:
+        """
+        Обновляет пайплайн-индикатор: подсвечивает текущую фазу.
+
+        Args:
+            phase: Ключ фазы из PIPELINE_STEPS или "parse", "analysis", "write", "commands", "done".
+        """
+        self._current_phase = phase
+        phase_order = [s[0] for s in PIPELINE_STEPS]
+        current_idx = phase_order.index(phase) if phase in phase_order else -1
+        has_errors = any(
+            op["status"] == "error" for op in self.processed_operations
+        )
+
+        for i, (key, label) in enumerate(PIPELINE_STEPS):
+            lbl = getattr(self, f"_pipe_lbl_{key}", None)
+            dot = getattr(self, f"_pipe_dot_{key}", None)
+            if lbl is None or dot is None:
+                continue
+
+            if i < current_idx:
+                # Завершённая фаза
+                color = PIPELINE_COLORS["error"] if has_errors and key == "analysis" else PIPELINE_COLORS["completed"]
+                lbl.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
+                dot.setStyleSheet(
+                    f"background-color: {color}; border-radius: 6px;"
+                )
+            elif i == current_idx:
+                # Активная фаза
+                lbl.setStyleSheet(
+                    f"color: {PIPELINE_COLORS['active']}; font-size: 11px; font-weight: bold;"
+                )
+                dot.setStyleSheet(
+                    f"background-color: {PIPELINE_COLORS['active']}; border-radius: 6px;"
+                )
+            else:
+                # Не начатая фаза
+                lbl.setStyleSheet(
+                    f"color: {PIPELINE_COLORS['inactive']}; font-size: 11px;"
+                )
+                dot.setStyleSheet(
+                    f"background-color: {PIPELINE_COLORS['inactive']}; border-radius: 6px;"
+                )
 
     # ─────────────────── Drag & Drop ───────────────────
 
@@ -184,11 +259,11 @@ class AIPatcherPro(QMainWindow):
         splitter.setStyleSheet("QSplitter::handle { background-color: #1e1e1e; }")
         main_layout.addWidget(splitter)
 
-        # --- SIDEBAR ---
+        # ════════════════ SIDEBAR ════════════════
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setMinimumWidth(350)
-        sidebar.setMaximumWidth(400)
+        sidebar.setMinimumWidth(370)
+        sidebar.setMaximumWidth(420)
 
         side_layout = QVBoxLayout(sidebar)
         side_layout.setContentsMargins(15, 15, 15, 15)
@@ -233,6 +308,49 @@ class AIPatcherPro(QMainWindow):
         self.btn_analyze.clicked.connect(self.parse_and_analyze)
         side_layout.addWidget(self.btn_analyze)
 
+        # ── ПАЙПЛАЙН ФАЗ ──
+        pipe_frame = QFrame()
+        pipe_frame.setObjectName("pipeline_frame")
+        pipe_layout = QVBoxLayout(pipe_frame)
+        pipe_layout.setContentsMargins(8, 8, 8, 8)
+        pipe_layout.setSpacing(4)
+
+        lbl_pipe_title = QLabel("Пайплайн")
+        lbl_pipe_title.setStyleSheet(
+            "color: #888888; font-size: 11px; font-weight: bold; letter-spacing: 0.5px;"
+        )
+        pipe_layout.addWidget(lbl_pipe_title)
+
+        # Горизонтальный ряд точек + метки
+        dots_layout = QHBoxLayout()
+        dots_layout.setSpacing(2)
+
+        for i, (key, label) in enumerate(PIPELINE_STEPS):
+            # Точка
+            dot = QLabel()
+            dot.setFixedSize(12, 12)
+            dot.setStyleSheet(
+                f"background-color: {PIPELINE_COLORS['inactive']}; border-radius: 6px;"
+            )
+            setattr(self, f"_pipe_dot_{key}", dot)
+
+            # Метка
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {PIPELINE_COLORS['inactive']}; font-size: 11px;")
+            setattr(self, f"_pipe_lbl_{key}", lbl)
+
+            dots_layout.addWidget(dot)
+            dots_layout.addWidget(lbl, 1)
+
+            # Стрелка между шагами (кроме последнего)
+            if i < len(PIPELINE_STEPS) - 1:
+                arrow = QLabel(">")
+                arrow.setStyleSheet("color: #444444; font-size: 11px;")
+                dots_layout.addWidget(arrow)
+
+        pipe_layout.addLayout(dots_layout)
+        side_layout.addWidget(pipe_frame)
+
         # ── Индикатор активности ──
         activity_frame = QFrame()
         activity_frame.setObjectName("activity_frame")
@@ -255,7 +373,7 @@ class AIPatcherPro(QMainWindow):
 
         side_layout.addWidget(activity_frame)
 
-        # Прогресс
+        # ── Прогресс ──
         progress_frame = QFrame()
         prog_layout = QVBoxLayout(progress_frame)
 
@@ -273,6 +391,23 @@ class AIPatcherPro(QMainWindow):
         prog_layout.addWidget(self.lbl_progress_text)
 
         side_layout.addWidget(progress_frame)
+
+        # ── СВОДНЫЙ БАННЕР ──
+        self.summary_frame = QFrame()
+        self.summary_frame.setObjectName("summary_frame")
+        self.summary_frame.setVisible(False)
+        summary_layout = QVBoxLayout(self.summary_frame)
+        summary_layout.setContentsMargins(8, 6, 8, 6)
+
+        self.lbl_summary = QLabel("")
+        self.lbl_summary.setObjectName("lbl_summary")
+        self.lbl_summary.setWordWrap(True)
+        self.lbl_summary.setStyleSheet(
+            "font-size: 12px; font-weight: bold; padding: 4px;"
+        )
+        summary_layout.addWidget(self.lbl_summary)
+
+        side_layout.addWidget(self.summary_frame)
 
         self.btn_history = QPushButton("История бэкапов")
         self.btn_history.setObjectName("btn_purple")
@@ -295,7 +430,7 @@ class AIPatcherPro(QMainWindow):
 
         splitter.addWidget(sidebar)
 
-        # --- MAIN AREA ---
+        # ════════════════ MAIN AREA ════════════════
         main_splitter = QSplitter(Qt.Orientation.Vertical)
 
         # Верхняя часть: карточки операций
@@ -422,11 +557,14 @@ class AIPatcherPro(QMainWindow):
         tabs.addTab(self.scanner_tab, "Сканер проекта")
 
         splitter.addWidget(tabs)
-        splitter.setSizes([380, 920])
+        splitter.setSizes([400, 900])
 
         # Счётчик логов (для авто-обрезки)
         self._log_line_count = 0
         self._log_max_lines = 2000
+
+        # Начальная фаза пайплайна
+        self._set_pipeline_phase("parse")
 
     # ─────────────────── Лог активности ───────────────────
 
@@ -477,7 +615,6 @@ class AIPatcherPro(QMainWindow):
         if self._log_line_count > self._log_max_lines:
             cursor = self.activity_log.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
-            # Удаляем первые 500 строк
             for _ in range(500):
                 cursor.movePosition(
                     cursor.MoveOperation.Down, cursor.MoveMode.KeepAnchor
@@ -521,6 +658,33 @@ class AIPatcherPro(QMainWindow):
             f"color: {color}; font-size: 12px; font-weight: bold;"
         )
 
+    # ─────────────────── Сводный баннер ───────────────────
+
+    def _show_summary(self, text: str, color: str = "#27ae60") -> None:
+        """
+        Показывает сводный баннер в сайдбаре.
+
+        Args:
+            text: Текст сводки.
+            color: Цвет текста.
+        """
+        self.summary_frame.setVisible(True)
+        self.lbl_summary.setText(text)
+        self.lbl_summary.setStyleSheet(
+            f"color: {color}; font-size: 12px; font-weight: bold; padding: 4px;"
+        )
+        # Обновляем цвет рамки баннера
+        self.summary_frame.setStyleSheet(
+            f"QFrame#summary_frame {{ "
+            f"background-color: {color}11; "
+            f"border: 1px solid {color}44; "
+            f"border-radius: 6px; }}"
+        )
+
+    def _hide_summary(self) -> None:
+        """Скрывает сводный баннер."""
+        self.summary_frame.setVisible(False)
+
     # ─────────────────── Основные действия ───────────────────
 
     def clear_all(self) -> None:
@@ -532,6 +696,7 @@ class AIPatcherPro(QMainWindow):
         self.commands_after_analysis.clear()
         self.commands_after_apply.clear()
         self.command_results.clear()
+        self._patch_written = False
 
         while self.scroll_layout.count():
             child = self.scroll_layout.takeAt(0)
@@ -560,12 +725,14 @@ class AIPatcherPro(QMainWindow):
             "color: #888888; font-size: 12px; font-weight: bold;"
         )
 
+        self._hide_summary()
         self._clear_log()
+        self._set_pipeline_phase("parse")
 
     def copy_error_report(self) -> None:
         """Генерирует и копирует в буфер обмена отчёт об ошибках для ИИ."""
         failed = [
-            op for op in self.processed_operations if op["status"] != "success"
+            op for op in self.processed_operations if op["status"] not in ("success", "applied")
         ]
         if not failed:
             QMessageBox.information(self, "Отчет", "Все успешно!")
@@ -604,6 +771,9 @@ class AIPatcherPro(QMainWindow):
 
     def parse_and_analyze(self) -> None:
         """Парсит JSON из текстового поля и запускает анализ."""
+        self._patch_written = False
+        self._set_pipeline_phase("parse")
+        self._hide_summary()
         self._log("parse", "Парсинг JSON из текстового поля...")
 
         try:
@@ -632,6 +802,7 @@ class AIPatcherPro(QMainWindow):
         except (ValueError, json.JSONDecodeError) as e:
             self._log("parse", f"Ошибка парсинга: {e}")
             self._stop_pulse(success=False)
+            self._set_pipeline_phase("parse")
             QMessageBox.critical(self, "Ошибка парсинга", str(e))
             return
 
@@ -640,9 +811,7 @@ class AIPatcherPro(QMainWindow):
         self._start_processing(self.raw_operations)
 
     def recalculate_file(self, filepath: str) -> None:
-        """
-        Пересчитывает операции для конкретного файла.
-        """
+        """Пересчитывает операции для конкретного файла."""
         self.btn_apply.setEnabled(False)
 
         # Удаляем обработанные операции для этого файла
@@ -676,6 +845,7 @@ class AIPatcherPro(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
         self._start_pulse()
+        self._set_pipeline_phase("analysis")
 
         if not is_recalc:
             self.progress_bar.setMaximum(len(self.raw_operations))
@@ -711,9 +881,9 @@ class AIPatcherPro(QMainWindow):
         status = result["status"]
 
         if status == "success":
-            self._log("done", f"OK: {action} → {file_path}")
+            self._log("done", f"НАЙДЕНО: {action} → {file_path}")
         elif status == "already_applied":
-            self._log("done", f"УЖЕ ПРИМЕНЕНО: {action} → {file_path}")
+            self._log("done", f"УЖЕ БЫЛО: {action} → {file_path}")
         else:
             self._log("cmd_stderr", f"ОШИБКА: {action} → {file_path}", result.get("error", ""))
 
@@ -727,16 +897,123 @@ class AIPatcherPro(QMainWindow):
         self.apply_sorting()
         self._check_ready_status()
 
+        # Считаем результаты анализа
+        total = len(self.processed_operations)
+        found = sum(1 for op in self.processed_operations if op["status"] == "success")
+        already = sum(1 for op in self.processed_operations if op["status"] == "already_applied")
+        errors = sum(1 for op in self.processed_operations if op["status"] == "error")
+
+        if errors > 0:
+            self._show_summary(
+                f"Анализ: {found} найдено, {already} уже было, {errors} ошибок",
+                "#c0392b"
+            )
+            self._set_pipeline_phase("analysis")
+            self._stop_pulse(success=False)
+        else:
+            self._show_summary(
+                f"Анализ: {found} найдено, {already} уже было",
+                "#00bcd4"
+            )
+            self._stop_pulse(success=True)
+
         # Если есть команды after_analysis — предлагаем выполнить
         if self.commands_after_analysis:
             self._propose_commands(
                 self.commands_after_analysis,
                 "after_analysis",
             )
-        else:
-            # Нет команд — просто остановить пульсацию
-            has_errors = any(op["status"] == "error" for op in self.processed_operations)
-            self._stop_pulse(success=not has_errors)
+
+    # ─────────────────── Применение патча ───────────────────
+
+    def apply_patch(self) -> None:
+        """Применяет все успешные операции патча — запись файлов на диск."""
+        self._set_pipeline_phase("write")
+        self._log("apply", f"Запись файлов на диск...")
+
+        # Создаём бэкап
+        self.backup_mgr.create_backup(self.patch_name, self.memory_files)
+
+        try:
+            written_count = 0
+            for abs_p, content in self.memory_files.items():
+                os.makedirs(os.path.dirname(abs_p), exist_ok=True)
+                with open(abs_p, "w", encoding="utf-8") as f:
+                    f.write(content)
+                written_count += 1
+
+            # ── Обновляем статусы карточек: success → applied ──
+            self._patch_written = True
+            for op in self.processed_operations:
+                if op["status"] == "success":
+                    op["status"] = "applied"
+
+            # Перерисовываем карточки
+            self.apply_sorting()
+
+            # Считаем результаты
+            total = len(self.processed_operations)
+            applied = sum(1 for op in self.processed_operations if op["status"] == "applied")
+            already = sum(1 for op in self.processed_operations if op["status"] == "already_applied")
+            errors = sum(1 for op in self.processed_operations if op["status"] == "error")
+
+            self._log("done", f"Патч применён! Файлов записано: {written_count}")
+
+            self._show_summary(
+                f"Код применён: {applied} файлов изменено, {already} без изменений, {errors} ошибок",
+                "#27ae60" if errors == 0 else "#f39c12"
+            )
+
+            self.lbl_status.setText("Патч применён")
+            self.lbl_status.setObjectName("status_success")
+            self.lbl_status.style().unpolish(self.lbl_status)
+            self.lbl_status.style().polish(self.lbl_status)
+
+            # Если есть команды after_apply — показываем диалог
+            if self.commands_after_apply:
+                self._propose_commands(
+                    self.commands_after_apply,
+                    "after_apply",
+                )
+            else:
+                self._set_pipeline_phase("done")
+                self._stop_pulse(success=True)
+                self._show_final_summary()
+
+        except (OSError, IOError) as e:
+            self._log("cmd_stderr", f"Ошибка записи: {e}")
+            self._stop_pulse(success=False)
+            self._set_pipeline_phase("write")
+            self._show_summary(f"Ошибка записи файлов: {e}", "#c0392b")
+            QMessageBox.critical(
+                self, "Ошибка записи", f"Не удалось записать файлы:\n{e}"
+            )
+
+    def _show_final_summary(self) -> None:
+        """Показывает финальную сводку после завершения всех фаз."""
+        applied = sum(1 for op in self.processed_operations if op["status"] == "applied")
+        already = sum(1 for op in self.processed_operations if op["status"] == "already_applied")
+        errors = sum(1 for op in self.processed_operations if op["status"] == "error")
+        cmd_ok = sum(1 for r in self.command_results if r.get("status") == "success")
+        cmd_err = sum(1 for r in self.command_results if r.get("status") == "error")
+
+        parts = []
+        if applied:
+            parts.append(f"{applied} файлов изменено")
+        if already:
+            parts.append(f"{already} без изменений")
+        if errors:
+            parts.append(f"{errors} ошибок кода")
+        if cmd_ok:
+            parts.append(f"{cmd_ok} команд OK")
+        if cmd_err:
+            parts.append(f"{cmd_err} ошибок команд")
+
+        text = " | ".join(parts) if parts else "Патч обработан"
+        has_any_error = errors > 0 or cmd_err > 0
+        color = "#c0392b" if has_any_error else "#27ae60"
+
+        self._show_summary(text, color)
 
     # ─────────────────── Выполнение команд ───────────────────
 
@@ -807,7 +1084,6 @@ class AIPatcherPro(QMainWindow):
         cmd_display.setReadOnly(True)
         cmd_display.setPlainText("\n".join(cmd_text_parts))
 
-        # Подсветка опасных команд
         html = "<pre style='font-family: Consolas, monospace; font-size: 13px; margin: 0;'>"
         for line in cmd_text_parts:
             escaped = line.replace("<", "&lt;").replace(">", "&gt;")
@@ -821,7 +1097,7 @@ class AIPatcherPro(QMainWindow):
 
         # Кнопки
         btn_box = QHBoxLayout()
-        btn_cancel = QPushButton("Отмена")
+        btn_cancel = QPushButton("Пропустить команды")
         btn_cancel.setObjectName("btn_danger")
         btn_cancel.setStyleSheet(
             "background-color: #c0392b; color: white; border: none; "
@@ -843,6 +1119,16 @@ class AIPatcherPro(QMainWindow):
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._execute_commands(commands, phase)
+        else:
+            # Пользователь пропустил команды
+            if phase == "after_apply" and self._patch_written:
+                self._set_pipeline_phase("done")
+                self._stop_pulse(success=True)
+                self._show_final_summary()
+            elif phase == "after_analysis":
+                # Пропустили after_analysis — просто продолжаем
+                has_errors = any(op["status"] == "error" for op in self.processed_operations)
+                self._stop_pulse(success=not has_errors)
 
     def _execute_commands(self, commands: list, phase: str) -> None:
         """
@@ -857,6 +1143,7 @@ class AIPatcherPro(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
         self._start_pulse()
+        self._set_pipeline_phase("commands")
 
         self.cmd_log_frame.setVisible(True)
         self.cmd_log_text.clear()
@@ -887,7 +1174,7 @@ class AIPatcherPro(QMainWindow):
             f"background-color: #1a1a1a;'>"
             f"<div style='color: #f39c12; font-weight: bold; font-size: 13px;'>"
             f"<span id='cmd_{index}'>{index + 1}. {cmd.replace('<', '&lt;').replace('>', '&gt;')}</span>"
-            f" <span style='color: #888; font-size: 11px;'>⏳ Выполняется...</span></div>"
+            f" <span style='color: #888; font-size: 11px;'>Выполняется...</span></div>"
         )
         if description:
             header += (
@@ -904,16 +1191,11 @@ class AIPatcherPro(QMainWindow):
     def _on_command_output(self, index: int, stream_type: str, data: str) -> None:
         """
         Обрабатывает потоковый вывод команды в реальном времени.
-
-        Args:
-            index: Порядковый номер команды.
-            stream_type: "stdout" или "stderr".
-            data: Порция вывода.
         """
         color = "#2ecc71" if stream_type == "stdout" else "#e74c3c"
         stage = "cmd_stdout" if stream_type == "stdout" else "cmd_stderr"
 
-        # В лог активности — только первые строки, чтобы не засорять
+        # В лог активности — только превью
         preview = data.strip()[:200]
         if preview:
             self._log(stage, f"[{index + 1}] {stream_type}: {preview}")
@@ -924,17 +1206,10 @@ class AIPatcherPro(QMainWindow):
             .replace("<", "&lt;")
             .replace(">", "&gt;")
         )
-        # Добавляем в текущую команду
-        # Перечитываем и пересобираем HTML с новым выводом
         current_html = self.cmd_log_text.toHtml()
-        # Вставляем перед закрывающим div команды
         insert_marker = f"id='cmd_out_{index}'"
         if insert_marker in current_html:
-            # Добавляем порцию вывода внутрь блока
-            span = (
-                f"<span style='color: {color};'>{escaped}</span>"
-            )
-            # Заменяем маркер, добавляя span после него
+            span = f"<span style='color: {color};'>{escaped}</span>"
             current_html = current_html.replace(
                 f"{insert_marker} style='font-family: Consolas, monospace; "
                 f"font-size: 11px; white-space: pre-wrap;'>",
@@ -943,7 +1218,6 @@ class AIPatcherPro(QMainWindow):
             )
             self.cmd_log_text.setHtml(current_html)
         else:
-            # Fallback — просто добавляем
             self.cmd_log_text.append(
                 f"<span style='color: {color};'>{escaped}</span>"
             )
@@ -972,13 +1246,18 @@ class AIPatcherPro(QMainWindow):
         """Обрабатывает завершение всех команд."""
         self.btn_analyze.setEnabled(True)
         QApplication.restoreOverrideCursor()
-        self._check_ready_status()
 
         has_cmd_errors = any(
             r.get("status") == "error"
             for r in self.command_results
         )
+
+        self._set_pipeline_phase("done")
         self._stop_pulse(success=not has_cmd_errors)
+        self._show_final_summary()
+
+        # Обновляем статус кнопки
+        self.btn_apply.setEnabled(False)
 
         self._log(
             "done",
@@ -998,7 +1277,6 @@ class AIPatcherPro(QMainWindow):
             stderr = result.get("stderr", "")
             returncode = result.get("returncode", -1)
 
-            # Заголовок команды
             status_color = "#27ae60" if status == "success" else "#c0392b"
             status_text = "УСПЕХ" if status == "success" else f"ОШИБКА (код: {returncode})"
 
@@ -1089,19 +1367,25 @@ class AIPatcherPro(QMainWindow):
 
     def _check_ready_status(self) -> None:
         """Проверяет, готовы ли все операции к применению."""
-        has_errors = any(op["status"] == "error" for op in self.processed_operations)
+        has_errors = any(
+            op["status"] == "error" for op in self.processed_operations
+        )
         has_cmd_errors = any(
             r.get("status") == "error"
             for r in self.command_results
         )
 
-        if not has_errors and not has_cmd_errors and self.processed_operations:
+        if not has_errors and not has_cmd_errors and self.processed_operations and not self._patch_written:
             self.lbl_status.setText("Готово к применению")
             self.lbl_status.setObjectName("status_success")
             self.btn_apply.setEnabled(True)
         elif not self.processed_operations:
             self.lbl_status.setText("Статус: Ожидание")
             self.lbl_status.setObjectName("status_warning")
+            self.btn_apply.setEnabled(False)
+        elif self._patch_written:
+            self.lbl_status.setText("Патч применён")
+            self.lbl_status.setObjectName("status_success")
             self.btn_apply.setEnabled(False)
         else:
             self.lbl_status.setText("Есть ошибки")
@@ -1130,7 +1414,7 @@ class AIPatcherPro(QMainWindow):
             item for item in self.raw_operations if item["id"] != op_id
         ]
 
-        if target_processed["status"] != "success":
+        if target_processed["status"] not in ("success", "applied"):
             self.processed_operations = [
                 item for item in self.processed_operations if item["id"] != op_id
             ]
@@ -1200,38 +1484,3 @@ class AIPatcherPro(QMainWindow):
                 or target_raw["op"].get("file", "unknown")
             )
             self.recalculate_file(filepath)
-
-    def apply_patch(self) -> None:
-        """Применяет все успешные операции патча."""
-        # Создаём бэкап
-        self.backup_mgr.create_backup(self.patch_name, self.memory_files)
-
-        self._log("apply", f"Запись файлов на диск...")
-
-        try:
-            for abs_p, content in self.memory_files.items():
-                os.makedirs(os.path.dirname(abs_p), exist_ok=True)
-                with open(abs_p, "w", encoding="utf-8") as f:
-                    f.write(content)
-
-            self._log("done", f"Патч '{self.patch_name}' успешно применён!")
-
-            QMessageBox.information(
-                self, "Успех", f"Патч '{self.patch_name}' успешно применен!"
-            )
-
-            # Если есть команды after_apply — предлагаем выполнить
-            if self.commands_after_apply:
-                self._propose_commands(
-                    self.commands_after_apply,
-                    "after_apply",
-                )
-            else:
-                self.clear_all()
-
-        except (OSError, IOError) as e:
-            self._log("cmd_stderr", f"Ошибка записи: {e}")
-            self._stop_pulse(success=False)
-            QMessageBox.critical(
-                self, "Ошибка записи", f"Не удалось записать файлы:\n{e}"
-            )
