@@ -1,4 +1,4 @@
-"""Ядро приложения: поиск, парсинг, патчинг, бэкапы, безопасность, команды."""
+"""Ядро приложения: поиск, парсинг, патчинг, бэкапы, безопасность, команды, сканер."""
 
 from ai_patcher_pro.core.search import SearchEngine
 from ai_patcher_pro.core.json_parser import extract_all_json
@@ -10,6 +10,7 @@ from ai_patcher_pro.core.command_utils import (
     normalize_command,
     check_dangerous_command,
 )
+from ai_patcher_pro.core.scanner import ScannerEngine
 
 __all__ = [
     "SearchEngine",
@@ -21,4 +22,5 @@ __all__ = [
     "ProcessorThread",
     "normalize_command",
     "check_dangerous_command",
+    "ScannerEngine",
 ]

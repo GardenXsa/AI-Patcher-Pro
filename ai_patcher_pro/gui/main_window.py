@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QFileDialog,
     QApplication,
+    QTabWidget,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
@@ -40,6 +41,7 @@ from ai_patcher_pro.core.command_executor import CommandExecutorThread
 from ai_patcher_pro.gui.operation_card import OperationCard
 from ai_patcher_pro.gui.backup_dialog import BackupManagerDialog
 from ai_patcher_pro.gui.code_viewer import CodeHighlighter
+from ai_patcher_pro.gui.scanner_tab import ScannerTab
 from ai_patcher_pro.utils.file_io import read_file_safe
 
 
@@ -262,7 +264,23 @@ class AIPatcherPro(QMainWindow):
 
         right_layout.addWidget(self.cmd_log_frame)
 
-        splitter.addWidget(right_panel)
+        # --- ТАБЫ: Патчер + Сканер ---
+        tabs = QTabWidget()
+        tabs.setStyleSheet(
+            "QTabWidget::pane { border: none; background-color: #1e1e1e; }"
+            "QTabBar::tab { background-color: #2d2d2d; color: #d4d4d4; "
+            "padding: 8px 20px; border-top-left-radius: 6px; "
+            "border-top-right-radius: 6px; margin-right: 2px; font-weight: bold; }"
+            "QTabBar::tab:selected { background-color: #1e1e1e; color: #3498db; }"
+            "QTabBar::tab:hover { background-color: #3a3a3a; }"
+        )
+
+        tabs.addTab(right_panel, "Патчер")
+
+        self.scanner_tab = ScannerTab()
+        tabs.addTab(self.scanner_tab, "Сканер проекта")
+
+        splitter.addWidget(tabs)
         splitter.setSizes([380, 920])
 
     def clear_all(self) -> None:
