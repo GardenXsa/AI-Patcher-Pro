@@ -63,7 +63,7 @@ def main() -> int:
     if not is_admin():
         if sys.platform == "win32":
             msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.MessageIcon.Warning)
+            msg_box.setIcon(QMessageBox.Icon.Warning)
             msg_box.setWindowTitle("Требуются права администратора")
             msg_box.setText(
                 "AI Patcher Pro требует запуска от имени администратора\n"
@@ -83,7 +83,7 @@ def main() -> int:
                 sys.exit(1)
         else:
             msg_box = QMessageBox()
-            msg_box.setIcon(QMessageBox.MessageIcon.Warning)
+            msg_box.setIcon(QMessageBox.Icon.Warning)
             msg_box.setWindowTitle("Требуются права root")
             msg_box.setText(
                 "AI Patcher Pro требует запуска с правами суперпользователя\n"
