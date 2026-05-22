@@ -6,10 +6,13 @@
 - Обязательный запуск от имени администратора
 - Лог выполнения команд с возможностью копирования
 - Диалог подтверждения перед выполнением команд
+- Реальное время статусов и потоковый вывод команд
 """
 
 import os
 import json
+import time
+from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -30,7 +33,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QTabWidget,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 
 from ai_patcher_pro.core.json_parser import extract_all_json
@@ -45,12 +48,41 @@ from ai_patcher_pro.gui.scanner_tab import ScannerTab
 from ai_patcher_pro.utils.file_io import read_file_safe
 
 
+# ─────────────────────── Цвета стадий ───────────────────────
+
+STAGE_COLORS = {
+    "parse": "#3498db",      # Синий — парсинг
+    "load": "#f39c12",       # Оранжевый — загрузка файла
+    "search": "#9b59b6",     # Фиолетовый — поиск
+    "apply": "#2ecc71",      # Зелёный — применение
+    "diff": "#1abc9c",       # Бирюзовый — генерация diff
+    "cmd_start": "#f39c12",  # Оранжевый — команда началась
+    "cmd_stdout": "#2ecc71", # Зелёный — вывод stdout
+    "cmd_stderr": "#e74c3c", # Красный — вывод stderr
+    "cmd_done": "#27ae60",   # Зелёный — команда завершена
+    "done": "#27ae60",       # Зелёный — завершено
+}
+
+STAGE_LABELS = {
+    "parse": "ПАРСИНГ",
+    "load": "ЗАГРУЗКА",
+    "search": "ПОИСК",
+    "apply": "ПРИМЕНЕНИЕ",
+    "diff": "DIFF",
+    "cmd_start": "КОМАНДА",
+    "cmd_stdout": "STDOUT",
+    "cmd_stderr": "STDERR",
+    "cmd_done": "РЕЗУЛЬТАТ",
+    "done": "ГОТОВО",
+}
+
+
 class AIPatcherPro(QMainWindow):
     """Главное окно приложения AI Patcher Pro."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AI Patcher Pro v3.0")
+        self.setWindowTitle("AI Patcher Pro v3.1")
         self.resize(1300, 800)
         self.setAcceptDrops(True)
 
@@ -67,10 +99,43 @@ class AIPatcherPro(QMainWindow):
 
         self.backup_mgr = BackupManager(self.workspace)
 
+        # Анимация пульсации индикатора
+        self._pulse_state = False
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.timeout.connect(self._toggle_pulse)
+
         self._setup_ui()
         self.backup_mgr.init_backup_dir()
 
-    # --- Drag & Drop ---
+    # ─────────────────── Анимация индикатора ───────────────────
+
+    def _toggle_pulse(self) -> None:
+        """Переключает пульсацию индикатора активности."""
+        self._pulse_state = not self._pulse_state
+        if self._pulse_state:
+            self.lbl_activity_dot.setStyleSheet(
+                "background-color: #2ecc71; border-radius: 7px;"
+            )
+        else:
+            self.lbl_activity_dot.setStyleSheet(
+                "background-color: #1a6b3a; border-radius: 7px;"
+            )
+
+    def _start_pulse(self) -> None:
+        """Запускает пульсацию."""
+        self._pulse_state = False
+        self._pulse_timer.start(500)
+
+    def _stop_pulse(self, success: bool = True) -> None:
+        """Останавливает пульсацию и показывает финальный цвет."""
+        self._pulse_timer.stop()
+        color = "#27ae60" if success else "#c0392b"
+        self.lbl_activity_dot.setStyleSheet(
+            f"background-color: {color}; border-radius: 7px;"
+        )
+
+    # ─────────────────── Drag & Drop ───────────────────
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """Принимает перетаскивание файлов или текста."""
         if event.mimeData().hasUrls() or event.mimeData().hasText():
@@ -103,6 +168,8 @@ class AIPatcherPro(QMainWindow):
             folder_name = os.path.basename(folder) or folder
             self.btn_workspace.setText(f"  {folder_name}")
             self.clear_all()
+
+    # ─────────────────── UI ───────────────────
 
     def _setup_ui(self) -> None:
         """Инициализация UI главного окна."""
@@ -166,6 +233,28 @@ class AIPatcherPro(QMainWindow):
         self.btn_analyze.clicked.connect(self.parse_and_analyze)
         side_layout.addWidget(self.btn_analyze)
 
+        # ── Индикатор активности ──
+        activity_frame = QFrame()
+        activity_frame.setObjectName("activity_frame")
+        act_layout = QHBoxLayout(activity_frame)
+        act_layout.setContentsMargins(8, 4, 8, 4)
+
+        self.lbl_activity_dot = QLabel()
+        self.lbl_activity_dot.setFixedSize(14, 14)
+        self.lbl_activity_dot.setStyleSheet(
+            "background-color: #555555; border-radius: 7px;"
+        )
+        act_layout.addWidget(self.lbl_activity_dot)
+
+        self.lbl_activity = QLabel("Ожидание")
+        self.lbl_activity.setObjectName("lbl_activity")
+        self.lbl_activity.setStyleSheet(
+            "color: #888888; font-size: 12px; font-weight: bold;"
+        )
+        act_layout.addWidget(self.lbl_activity, 1)
+
+        side_layout.addWidget(activity_frame)
+
         # Прогресс
         progress_frame = QFrame()
         prog_layout = QVBoxLayout(progress_frame)
@@ -207,6 +296,9 @@ class AIPatcherPro(QMainWindow):
         splitter.addWidget(sidebar)
 
         # --- MAIN AREA ---
+        main_splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # Верхняя часть: карточки операций
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
@@ -264,6 +356,55 @@ class AIPatcherPro(QMainWindow):
 
         right_layout.addWidget(self.cmd_log_frame)
 
+        main_splitter.addWidget(right_panel)
+
+        # ── ПАНЕЛЬ ЛОГА АКТИВНОСТИ (нижняя) ──
+        log_panel = QWidget()
+        log_panel.setObjectName("log_panel")
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(10, 6, 10, 6)
+        log_layout.setSpacing(4)
+
+        # Заголовок лога
+        log_header = QHBoxLayout()
+
+        self.lbl_log_title = QLabel("Лог активности")
+        self.lbl_log_title.setObjectName("log_title")
+        log_header.addWidget(self.lbl_log_title)
+
+        log_header.addStretch()
+
+        self.btn_toggle_log = QPushButton("Свернуть")
+        self.btn_toggle_log.setObjectName("btn_toggle_log")
+        self.btn_toggle_log.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_log.setFixedWidth(90)
+        self.btn_toggle_log.clicked.connect(self._toggle_log_panel)
+        log_header.addWidget(self.btn_toggle_log)
+
+        self.btn_clear_log = QPushButton("Очистить")
+        self.btn_clear_log.setObjectName("btn_toggle_log")
+        self.btn_clear_log.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_clear_log.setFixedWidth(80)
+        self.btn_clear_log.clicked.connect(self._clear_log)
+        log_header.addWidget(self.btn_clear_log)
+
+        log_layout.addLayout(log_header)
+
+        # Текстовое поле лога
+        self.activity_log = QTextEdit()
+        self.activity_log.setReadOnly(True)
+        self.activity_log.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.activity_log.setMaximumHeight(200)
+        self.activity_log.setStyleSheet(
+            "QTextEdit { font-family: Consolas, monospace; font-size: 11px; "
+            "background-color: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 4px; "
+            "padding: 6px; color: #d4d4d4; }"
+        )
+        log_layout.addWidget(self.activity_log)
+
+        main_splitter.addWidget(log_panel)
+        main_splitter.setSizes([550, 200])
+
         # --- ТАБЫ: Патчер + Сканер ---
         tabs = QTabWidget()
         tabs.setStyleSheet(
@@ -275,13 +416,112 @@ class AIPatcherPro(QMainWindow):
             "QTabBar::tab:hover { background-color: #3a3a3a; }"
         )
 
-        tabs.addTab(right_panel, "Патчер")
+        tabs.addTab(main_splitter, "Патчер")
 
         self.scanner_tab = ScannerTab()
         tabs.addTab(self.scanner_tab, "Сканер проекта")
 
         splitter.addWidget(tabs)
         splitter.setSizes([380, 920])
+
+        # Счётчик логов (для авто-обрезки)
+        self._log_line_count = 0
+        self._log_max_lines = 2000
+
+    # ─────────────────── Лог активности ───────────────────
+
+    def _log(self, stage: str, message: str, detail: str = "") -> None:
+        """
+        Добавляет запись в лог активности.
+
+        Args:
+            stage: Стадия обработки (parse, load, search, apply, diff, cmd_*).
+            message: Основное сообщение.
+            detail: Дополнительная информация.
+        """
+        now = datetime.now().strftime("%H:%M:%S")
+        color = STAGE_COLORS.get(stage, "#888888")
+        label = STAGE_LABELS.get(stage, stage.upper())
+
+        detail_html = ""
+        if detail:
+            escaped_detail = (
+                detail.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            detail_html = (
+                f"<span style='color: #666666; font-size: 10px;'> "
+                f"→ {escaped_detail}</span>"
+            )
+
+        escaped_msg = (
+            message.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+        line = (
+            f"<div style='padding: 1px 0;'>"
+            f"<span style='color: #555555;'>{now}</span> "
+            f"<span style='color: {color}; font-weight: bold;'>[{label}]</span> "
+            f"<span style='color: #d4d4d4;'>{escaped_msg}</span>"
+            f"{detail_html}"
+            f"</div>"
+        )
+
+        self.activity_log.append(line)
+        self._log_line_count += 1
+
+        # Авто-обрезка при превышении лимита
+        if self._log_line_count > self._log_max_lines:
+            cursor = self.activity_log.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            # Удаляем первые 500 строк
+            for _ in range(500):
+                cursor.movePosition(
+                    cursor.MoveOperation.Down, cursor.MoveMode.KeepAnchor
+                )
+            cursor.movePosition(
+                cursor.MoveOperation.StartOfLine, cursor.MoveMode.KeepAnchor
+            )
+            cursor.removeSelectedText()
+            self._log_line_count -= 500
+
+        # Прокрутка вниз
+        self.activity_log.verticalScrollBar().setValue(
+            self.activity_log.verticalScrollBar().maximum()
+        )
+
+    def _clear_log(self) -> None:
+        """Очищает лог активности."""
+        self.activity_log.clear()
+        self._log_line_count = 0
+
+    _log_collapsed = False
+
+    def _toggle_log_panel(self) -> None:
+        """Сворачивает/разворачивает панель лога."""
+        if self._log_collapsed:
+            self.activity_log.setVisible(True)
+            self.btn_toggle_log.setText("Свернуть")
+            self._log_collapsed = False
+        else:
+            self.activity_log.setVisible(False)
+            self.btn_toggle_log.setText("Развернуть")
+            self._log_collapsed = True
+
+    def _update_activity_indicator(self, stage: str, message: str) -> None:
+        """Обновляет индикатор активности в сайдбаре."""
+        color = STAGE_COLORS.get(stage, "#888888")
+        label = STAGE_LABELS.get(stage, "")
+
+        self.lbl_activity.setText(f"{label}: {message}")
+        self.lbl_activity.setStyleSheet(
+            f"color: {color}; font-size: 12px; font-weight: bold;"
+        )
+
+    # ─────────────────── Основные действия ───────────────────
 
     def clear_all(self) -> None:
         """Очищает все данные и UI."""
@@ -309,6 +549,18 @@ class AIPatcherPro(QMainWindow):
         self.btn_apply.setEnabled(False)
         self.cmd_log_frame.setVisible(False)
         self.cmd_log_text.clear()
+
+        # Сброс индикатора
+        self._stop_pulse(success=False)
+        self.lbl_activity_dot.setStyleSheet(
+            "background-color: #555555; border-radius: 7px;"
+        )
+        self.lbl_activity.setText("Ожидание")
+        self.lbl_activity.setStyleSheet(
+            "color: #888888; font-size: 12px; font-weight: bold;"
+        )
+
+        self._clear_log()
 
     def copy_error_report(self) -> None:
         """Генерирует и копирует в буфер обмена отчёт об ошибках для ИИ."""
@@ -348,8 +600,12 @@ class AIPatcherPro(QMainWindow):
         )
         QMessageBox.information(self, "Скопировано", "JSON блока скопирован.")
 
+    # ─────────────────── Парсинг и анализ ───────────────────
+
     def parse_and_analyze(self) -> None:
         """Парсит JSON из текстового поля и запускает анализ."""
+        self._log("parse", "Парсинг JSON из текстового поля...")
+
         try:
             data = extract_all_json(self.txt_json.toPlainText().strip())
             self.patch_name = data["patch_name"]
@@ -365,7 +621,17 @@ class AIPatcherPro(QMainWindow):
                 c for c in all_commands if c.get("run") == "after_apply"
             ]
             self.command_results.clear()
+
+            self._log(
+                "parse",
+                f"Найдено: {len(self.raw_operations)} операций, "
+                f"{len(all_commands)} команд",
+                f"Патч: {self.patch_name}"
+            )
+
         except (ValueError, json.JSONDecodeError) as e:
+            self._log("parse", f"Ошибка парсинга: {e}")
+            self._stop_pulse(success=False)
             QMessageBox.critical(self, "Ошибка парсинга", str(e))
             return
 
@@ -409,6 +675,8 @@ class AIPatcherPro(QMainWindow):
         self.scroll_area.setEnabled(False)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
+        self._start_pulse()
+
         if not is_recalc:
             self.progress_bar.setMaximum(len(self.raw_operations))
             self.progress_bar.setValue(0)
@@ -418,9 +686,15 @@ class AIPatcherPro(QMainWindow):
                     child.widget().deleteLater()
 
         self.thread = ProcessorThread(self.workspace, pending_ops, self.memory_files)
+        self.thread.status_update.connect(self._on_status_update)
         self.thread.operation_done.connect(self._on_operation_done)
         self.thread.finished_all.connect(self._on_analysis_finished)
         self.thread.start()
+
+    def _on_status_update(self, stage: str, message: str, detail: str) -> None:
+        """Обрабатывает промежуточный статус обработки."""
+        self._log(stage, message, detail)
+        self._update_activity_indicator(stage, message)
 
     def _on_operation_done(self, result: dict) -> None:
         """Обрабатывает завершение одной операции."""
@@ -429,6 +703,19 @@ class AIPatcherPro(QMainWindow):
         self.lbl_progress_text.setText(
             f"{len(self.processed_operations)} / {len(self.raw_operations)}"
         )
+
+        # Логируем результат
+        op = result["op"]
+        file_path = op.get("path") or op.get("file", "?")
+        action = op.get("action") or op.get("op", "?")
+        status = result["status"]
+
+        if status == "success":
+            self._log("done", f"OK: {action} → {file_path}")
+        elif status == "already_applied":
+            self._log("done", f"УЖЕ ПРИМЕНЕНО: {action} → {file_path}")
+        else:
+            self._log("cmd_stderr", f"ОШИБКА: {action} → {file_path}", result.get("error", ""))
 
     def _on_analysis_finished(self, updated_cache: dict) -> None:
         """Обрабатывает завершение всего анализа."""
@@ -446,6 +733,12 @@ class AIPatcherPro(QMainWindow):
                 self.commands_after_analysis,
                 "after_analysis",
             )
+        else:
+            # Нет команд — просто остановить пульсацию
+            has_errors = any(op["status"] == "error" for op in self.processed_operations)
+            self._stop_pulse(success=not has_errors)
+
+    # ─────────────────── Выполнение команд ───────────────────
 
     def _propose_commands(self, commands: list, phase: str) -> None:
         """
@@ -563,19 +856,117 @@ class AIPatcherPro(QMainWindow):
         self.btn_apply.setEnabled(False)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
+        self._start_pulse()
+
         self.cmd_log_frame.setVisible(True)
         self.cmd_log_text.clear()
         self._current_cmd_phase = phase
+        self._current_cmd_index = 0
+
+        self._log("cmd_start", f"Начало выполнения {len(commands)} команд ({phase})")
 
         self._cmd_thread = CommandExecutorThread(commands, self.workspace)
+        self._cmd_thread.command_started.connect(self._on_command_started)
+        self._cmd_thread.command_output.connect(self._on_command_output)
         self._cmd_thread.command_done.connect(self._on_command_done)
         self._cmd_thread.finished_all.connect(self._on_commands_finished)
         self._cmd_thread.start()
+
+    def _on_command_started(self, index: int, cmd: str, description: str) -> None:
+        """Обрабатывает начало выполнения команды."""
+        self._current_cmd_index = index
+        self._log("cmd_start", f"[{index + 1}] Запуск: {cmd}", description)
+
+        self._update_activity_indicator("cmd_start", f"Команда {index + 1}: {cmd[:60]}...")
+
+        # Добавляем заголовок в лог команд
+        html = self.cmd_log_text.toHtml()
+        header = (
+            f"<div style='margin-bottom: 4px; padding: 6px; "
+            f"border: 1px solid #f39c12; border-radius: 6px; "
+            f"background-color: #1a1a1a;'>"
+            f"<div style='color: #f39c12; font-weight: bold; font-size: 13px;'>"
+            f"<span id='cmd_{index}'>{index + 1}. {cmd.replace('<', '&lt;').replace('>', '&gt;')}</span>"
+            f" <span style='color: #888; font-size: 11px;'>⏳ Выполняется...</span></div>"
+        )
+        if description:
+            header += (
+                f"<div style='color: #8e44ad; font-style: italic; font-size: 12px; "
+                f"margin-top: 2px;'>{description.replace('<', '&lt;').replace('>', '&gt;')}</div>"
+            )
+        header += (
+            f"<div id='cmd_out_{index}' style='font-family: Consolas, monospace; "
+            f"font-size: 11px; white-space: pre-wrap;'></div>"
+            f"</div>"
+        )
+        self.cmd_log_text.setHtml(html + header)
+
+    def _on_command_output(self, index: int, stream_type: str, data: str) -> None:
+        """
+        Обрабатывает потоковый вывод команды в реальном времени.
+
+        Args:
+            index: Порядковый номер команды.
+            stream_type: "stdout" или "stderr".
+            data: Порция вывода.
+        """
+        color = "#2ecc71" if stream_type == "stdout" else "#e74c3c"
+        stage = "cmd_stdout" if stream_type == "stdout" else "cmd_stderr"
+
+        # В лог активности — только первые строки, чтобы не засорять
+        preview = data.strip()[:200]
+        if preview:
+            self._log(stage, f"[{index + 1}] {stream_type}: {preview}")
+
+        # В лог команд — полный вывод
+        escaped = (
+            data.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        # Добавляем в текущую команду
+        # Перечитываем и пересобираем HTML с новым выводом
+        current_html = self.cmd_log_text.toHtml()
+        # Вставляем перед закрывающим div команды
+        insert_marker = f"id='cmd_out_{index}'"
+        if insert_marker in current_html:
+            # Добавляем порцию вывода внутрь блока
+            span = (
+                f"<span style='color: {color};'>{escaped}</span>"
+            )
+            # Заменяем маркер, добавляя span после него
+            current_html = current_html.replace(
+                f"{insert_marker} style='font-family: Consolas, monospace; "
+                f"font-size: 11px; white-space: pre-wrap;'>",
+                f"{insert_marker} style='font-family: Consolas, monospace; "
+                f"font-size: 11px; white-space: pre-wrap;'>{span}",
+            )
+            self.cmd_log_text.setHtml(current_html)
+        else:
+            # Fallback — просто добавляем
+            self.cmd_log_text.append(
+                f"<span style='color: {color};'>{escaped}</span>"
+            )
 
     def _on_command_done(self, result: dict) -> None:
         """Обрабатывает завершение одной команды."""
         self.command_results.append(result)
         self._update_command_log()
+
+        cmd = result.get("cmd", "???")
+        status = result.get("status", "???")
+        returncode = result.get("returncode", -1)
+
+        if status == "success":
+            self._log("cmd_done", f"OK: {cmd[:80]}", f"Код возврата: {returncode}")
+        else:
+            stderr_preview = (result.get("stderr", "") or "")[:200]
+            self._log("cmd_stderr", f"ОШИБКА: {cmd[:80]}", f"Код: {returncode}, {stderr_preview}")
+
+        self._update_activity_indicator(
+            "cmd_done",
+            f"Команда {self._current_cmd_index + 1} завершена"
+        )
 
     def _on_commands_finished(self) -> None:
         """Обрабатывает завершение всех команд."""
@@ -583,8 +974,21 @@ class AIPatcherPro(QMainWindow):
         QApplication.restoreOverrideCursor()
         self._check_ready_status()
 
+        has_cmd_errors = any(
+            r.get("status") == "error"
+            for r in self.command_results
+        )
+        self._stop_pulse(success=not has_cmd_errors)
+
+        self._log(
+            "done",
+            f"Все команды выполнены. Успешно: "
+            f"{sum(1 for r in self.command_results if r.get('status') == 'success')}, "
+            f"Ошибки: {sum(1 for r in self.command_results if r.get('status') == 'error')}"
+        )
+
     def _update_command_log(self) -> None:
-        """Обновляет блок лога команд."""
+        """Обновляет блок лога команд (полная перерисовка при завершении команды)."""
         html_parts = []
         for i, result in enumerate(self.command_results, 1):
             cmd = result.get("cmd", "???")
@@ -661,6 +1065,8 @@ class AIPatcherPro(QMainWindow):
         QApplication.clipboard().setText("\n".join(lines))
         QMessageBox.information(self, "Скопировано", "Лог команд скопирован в буфер обмена!")
 
+    # ─────────────────── Сортировка и статусы ───────────────────
+
     def apply_sorting(self) -> None:
         """Применяет выбранную сортировку к карточкам операций."""
         while self.scroll_layout.count():
@@ -704,6 +1110,8 @@ class AIPatcherPro(QMainWindow):
 
         self.lbl_status.style().unpolish(self.lbl_status)
         self.lbl_status.style().polish(self.lbl_status)
+
+    # ─────────────────── Действия с операциями ───────────────────
 
     def action_delete(self, op_id: int) -> None:
         """Удаляет операцию из списка."""
@@ -798,11 +1206,15 @@ class AIPatcherPro(QMainWindow):
         # Создаём бэкап
         self.backup_mgr.create_backup(self.patch_name, self.memory_files)
 
+        self._log("apply", f"Запись файлов на диск...")
+
         try:
             for abs_p, content in self.memory_files.items():
                 os.makedirs(os.path.dirname(abs_p), exist_ok=True)
                 with open(abs_p, "w", encoding="utf-8") as f:
                     f.write(content)
+
+            self._log("done", f"Патч '{self.patch_name}' успешно применён!")
 
             QMessageBox.information(
                 self, "Успех", f"Патч '{self.patch_name}' успешно применен!"
@@ -818,6 +1230,8 @@ class AIPatcherPro(QMainWindow):
                 self.clear_all()
 
         except (OSError, IOError) as e:
+            self._log("cmd_stderr", f"Ошибка записи: {e}")
+            self._stop_pulse(success=False)
             QMessageBox.critical(
                 self, "Ошибка записи", f"Не удалось записать файлы:\n{e}"
             )

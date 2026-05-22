@@ -111,6 +111,38 @@ QFrame#cmd_log_frame {
     border-radius: 10px;
 }
 
+/* ИНДИКАТОР АКТИВНОСТИ */
+QFrame#activity_frame {
+    background-color: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+}
+
+/* ПАНЕЛЬ ЛОГА АКТИВНОСТИ */
+QWidget#log_panel {
+    background-color: #111111;
+    border-top: 1px solid #2a2a2a;
+}
+QLabel#log_title {
+    color: #007acc;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+}
+QPushButton#btn_toggle_log {
+    background-color: #2d2d2d;
+    color: #aaaaaa;
+    border: 1px solid #3c3c3c;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: bold;
+}
+QPushButton#btn_toggle_log:hover {
+    background-color: #3a3a3a;
+    color: #d4d4d4;
+}
+
 /* СКРОЛЛБАРЫ */
 QScrollBar:vertical { background-color: #1e1e1e; width: 14px; margin: 0px; }
 QScrollBar::handle:vertical { background-color: #424242; min-height: 30px; border-radius: 7px; margin: 2px; }

@@ -5,6 +5,7 @@
 - normalize_command: строка, словарь, альтернативные имена, пустые значения
 - check_dangerous_command: опасные и безопасные паттерны
 - CommandExecutorThread: успешное выполнение, ошибка, таймаут
+- Сигналы реального времени: command_started, command_output
 
 ПРИМЕЧАНИЕ: Тесты CommandExecutorThread требуют QApplication для работы
 сигналов/слотов Qt. Если QApplication не может быть создан (headless env),
@@ -203,9 +204,13 @@ class TestCommandExecutorThread(unittest.TestCase):
         """Запускает поток и собирает результаты через event loop."""
         results = []
         finished_flag = []
+        started_events = []
+        output_events = []
 
         thread.command_done.connect(lambda r: results.append(r))
         thread.finished_all.connect(lambda: finished_flag.append(True))
+        thread.command_started.connect(lambda i, c, d: started_events.append((i, c, d)))
+        thread.command_output.connect(lambda i, s, d: output_events.append((i, s, d)))
         thread.start()
 
         # Обработка событий Qt пока поток не завершится
@@ -216,7 +221,7 @@ class TestCommandExecutorThread(unittest.TestCase):
             elapsed += 10
 
         thread.wait(timeout)
-        return results, finished_flag
+        return results, finished_flag, started_events, output_events
 
     def test_successful_command(self):
         """Успешная команда возвращает status=success и stdout."""
@@ -225,7 +230,7 @@ class TestCommandExecutorThread(unittest.TestCase):
         commands = [normalize_command("echo hello")]
         thread = CommandExecutorThread(commands, os.getcwd())
 
-        results, finished = self._run_thread_and_collect(thread)
+        results, finished, started, output = self._run_thread_and_collect(thread)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["status"], "success")
         self.assertIn("hello", results[0]["stdout"])
@@ -238,7 +243,7 @@ class TestCommandExecutorThread(unittest.TestCase):
         commands = [normalize_command("nonexistent_command_xyz_12345")]
         thread = CommandExecutorThread(commands, os.getcwd())
 
-        results, finished = self._run_thread_and_collect(thread)
+        results, finished, started, output = self._run_thread_and_collect(thread)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["status"], "error")
         self.assertNotEqual(results[0]["returncode"], 0)
@@ -255,7 +260,7 @@ class TestCommandExecutorThread(unittest.TestCase):
         commands = [normalize_command(cmd)]
         thread = CommandExecutorThread(commands, os.getcwd())
 
-        results, finished = self._run_thread_and_collect(thread)
+        results, finished, started, output = self._run_thread_and_collect(thread)
         self.assertEqual(len(results), 1)
         self.assertIn("error", results[0]["stderr"])
 
@@ -269,7 +274,7 @@ class TestCommandExecutorThread(unittest.TestCase):
         ]
         thread = CommandExecutorThread(commands, os.getcwd())
 
-        results, finished = self._run_thread_and_collect(thread)
+        results, finished, started, output = self._run_thread_and_collect(thread)
         self.assertEqual(len(results), 2)
         self.assertIn("first", results[0]["stdout"])
         self.assertIn("second", results[1]["stdout"])
@@ -281,7 +286,7 @@ class TestCommandExecutorThread(unittest.TestCase):
         commands = [normalize_command("")]
         thread = CommandExecutorThread(commands, os.getcwd())
 
-        results, finished = self._run_thread_and_collect(thread)
+        results, finished, started, output = self._run_thread_and_collect(thread)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["status"], "error")
         self.assertIn("Пустая команда", results[0]["stderr"])
@@ -296,7 +301,7 @@ class TestCommandExecutorThread(unittest.TestCase):
         })]
         thread = CommandExecutorThread(commands, os.getcwd())
 
-        results, finished = self._run_thread_and_collect(thread)
+        results, finished, started, output = self._run_thread_and_collect(thread)
         self.assertTrue(len(results) > 0)
         self.assertEqual(results[0]["description"], "Тестовая команда")
 
@@ -307,7 +312,7 @@ class TestCommandExecutorThread(unittest.TestCase):
         commands = [normalize_command("rm -rf /tmp/test")]
         thread = CommandExecutorThread(commands, os.getcwd())
 
-        results, finished = self._run_thread_and_collect(thread)
+        results, finished, started, output = self._run_thread_and_collect(thread)
         self.assertTrue(len(results) > 0)
         self.assertTrue(len(results[0]["warnings"]) > 0)
 
@@ -318,8 +323,52 @@ class TestCommandExecutorThread(unittest.TestCase):
         commands = [normalize_command("echo done")]
         thread = CommandExecutorThread(commands, os.getcwd())
 
-        results, finished = self._run_thread_and_collect(thread)
+        results, finished, started, output = self._run_thread_and_collect(thread)
         self.assertTrue(finished)
+
+    def test_command_started_signal(self):
+        """Сигнал command_started отправляется перед выполнением команды."""
+        from ai_patcher_pro.core.command_executor import CommandExecutorThread
+
+        commands = [normalize_command({"cmd": "echo hello", "description": "test desc"})]
+        thread = CommandExecutorThread(commands, os.getcwd())
+
+        results, finished, started, output = self._run_thread_and_collect(thread)
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0][0], 0)  # index
+        self.assertIn("echo hello", started[0][1])  # cmd
+        self.assertEqual(started[0][2], "test desc")  # description
+
+    def test_command_output_signal_stdout(self):
+        """Сигнал command_output отправляется с потоковым stdout."""
+        from ai_patcher_pro.core.command_executor import CommandExecutorThread
+
+        commands = [normalize_command("echo hello_world_output")]
+        thread = CommandExecutorThread(commands, os.getcwd())
+
+        results, finished, started, output = self._run_thread_and_collect(thread)
+        # Должны получить хотя бы одно событие output со stdout
+        stdout_events = [(i, s, d) for i, s, d in output if s == "stdout"]
+        self.assertTrue(len(stdout_events) > 0, "Должен быть хотя бы один stdout output")
+        combined_stdout = "".join(d for _, _, d in stdout_events)
+        self.assertIn("hello_world_output", combined_stdout)
+
+    def test_command_started_multiple(self):
+        """command_started вызывается для каждой команды."""
+        from ai_patcher_pro.core.command_executor import CommandExecutorThread
+
+        commands = [
+            normalize_command("echo a"),
+            normalize_command("echo b"),
+            normalize_command("echo c"),
+        ]
+        thread = CommandExecutorThread(commands, os.getcwd())
+
+        results, finished, started, output = self._run_thread_and_collect(thread)
+        self.assertEqual(len(started), 3)
+        self.assertEqual(started[0][0], 0)
+        self.assertEqual(started[1][0], 1)
+        self.assertEqual(started[2][0], 2)
 
 
 if __name__ == "__main__":

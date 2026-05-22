@@ -59,7 +59,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLESHEET)
     app.setApplicationName("AI Patcher Pro")
-    app.setApplicationVersion("3.0.0")
+    app.setApplicationVersion("3.1.0")
 
     # Проверка прав администратора
     if not is_admin():

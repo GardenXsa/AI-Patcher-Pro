@@ -4,6 +4,11 @@
 Выполняет оценку каждой операции (поиск, вычисление diff) в фоне,
 чтобы не блокировать GUI. Использует виртуальную файловую систему
 для накопления изменений в памяти перед записью на диск.
+
+Сигналы реального времени:
+- status_update: промежуточные статусы каждой стадии обработки
+- operation_done: завершение обработки одной операции
+- finished_all: завершение всех операций
 """
 
 import os
@@ -23,10 +28,15 @@ class ProcessorThread(QThread):
     Фоновый поток для обработки операций патча.
 
     Сигналы:
+        status_update: Промежуточный статус (stage, message, detail).
+            stage: "parse" | "load" | "search" | "apply" | "diff" | "done"
+            message: Человекочитаемое описание текущего шага.
+            detail: Дополнительная информация (путь к файлу и т.д.)
         operation_done: Отправляется после обработки каждой операции.
         finished_all: Отправляется после завершения всех операций.
     """
 
+    status_update = pyqtSignal(str, str, str)  # stage, message, detail
     operation_done = pyqtSignal(dict)
     finished_all = pyqtSignal(dict)
 
@@ -49,9 +59,32 @@ class ProcessorThread(QThread):
 
     def run(self) -> None:
         """Выполняет обработку всех операций."""
-        for item in self.pending_ops:
+        total = len(self.pending_ops)
+        self.status_update.emit(
+            "parse",
+            f"Начинаем анализ {total} операций...",
+            ""
+        )
+
+        for i, item in enumerate(self.pending_ops):
+            op = item["op"]
+            file_hint = op.get("path") or op.get("file", "?")
+            action_hint = op.get("action") or op.get("op", "?")
+
+            self.status_update.emit(
+                "load",
+                f"Анализ операции {i + 1}/{total}",
+                f"{action_hint} → {file_hint}"
+            )
+
             res = self._evaluate_single_op(item)
             self.operation_done.emit(res)
+
+        self.status_update.emit(
+            "done",
+            f"Анализ завершён: {total} операций обработано",
+            ""
+        )
         self.finished_all.emit(self._cache)
 
     def _evaluate_single_op(self, item: Dict) -> Dict:
@@ -96,6 +129,11 @@ class ProcessorThread(QThread):
 
         # Загрузка файла в виртуальную файловую систему
         if abs_p not in self._cache:
+            self.status_update.emit(
+                "load",
+                f"Загрузка файла: {rel_path}",
+                abs_p
+            )
             if os.path.exists(abs_p):
                 try:
                     self._cache[abs_p] = read_file_safe(abs_p)
@@ -119,11 +157,25 @@ class ProcessorThread(QThread):
             return res
 
         try:
+            # Поиск кода
+            if action not in ("create_file", "append", "prepend") and search:
+                self.status_update.emit(
+                    "search",
+                    f"Поиск кода в {rel_path}",
+                    f"Длина запроса: {len(search)} символов"
+                )
+
             new_c = self._apply_action(
                 old_c, action, search, content, res
             )
 
             # Генерация diff
+            self.status_update.emit(
+                "diff",
+                f"Генерация diff: {rel_path}",
+                ""
+            )
+
             diff_lines = list(
                 difflib.unified_diff(
                     old_c.splitlines(), new_c.splitlines(), n=2, lineterm=""
