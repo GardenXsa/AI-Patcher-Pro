@@ -26,32 +26,32 @@ def is_admin() -> bool:
         return False
 
 
-def run_as_admin() -> None:
+def run_as_admin() -> int:
     """
     Перезапускает приложение с правами администратора.
 
     На Windows использует ShellExecuteW с глаголом "runas".
-    На Linux/macOS показывает инструкцию использовать sudo.
+    На Linux/macOS выводит инструкцию использовать sudo.
+
+    Returns:
+        0 при успешном перезапуске, 1 при ошибке.
     """
     if sys.platform == "win32":
-        try:
-            script = os.path.abspath(sys.argv[0])
-            params = " ".join([script] + sys.argv[1:])
-            ret = ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, params, None, 1
-            )
-            if ret <= 32:
-                raise OSError(f"ShellExecuteW вернул код ошибки: {ret}")
-            return 0  # Успешный перезапуск — вызывающий код сделает sys.exit
-        except OSError as e:
-            print(f"Не удалось перезапустить от имени администратора: {e}")
+        script = os.path.abspath(sys.argv[0])
+        params = " ".join([script] + sys.argv[1:])
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, params, None, 1
+        )
+        if ret <= 32:
+            print(f"Не удалось перезапустить от имени администратора (код {ret})")
             return 1
+        return 0
     else:
         print(
             "Запустите приложение с правами суперпользователя:\n"
             f"  sudo python3 {' '.join(sys.argv)}"
         )
-        sys.exit(1)
+        return 1
 
 
 def main() -> int:
