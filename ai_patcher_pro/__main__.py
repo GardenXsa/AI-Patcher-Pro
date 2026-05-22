@@ -37,13 +37,15 @@ def run_as_admin() -> None:
         try:
             script = os.path.abspath(sys.argv[0])
             params = " ".join([script] + sys.argv[1:])
-            ctypes.windll.shell32.ShellExecuteW(
+            ret = ctypes.windll.shell32.ShellExecuteW(
                 None, "runas", sys.executable, params, None, 1
             )
-            sys.exit(0)
-        except (OSError, ctypes.WindowsError) as e:
+            if ret <= 32:
+                raise OSError(f"ShellExecuteW вернул код ошибки: {ret}")
+            return 0  # Успешный перезапуск — вызывающий код сделает sys.exit
+        except OSError as e:
             print(f"Не удалось перезапустить от имени администратора: {e}")
-            sys.exit(1)
+            return 1
     else:
         print(
             "Запустите приложение с правами суперпользователя:\n"
@@ -78,7 +80,8 @@ def main() -> int:
             msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
 
             if msg_box.exec() == QMessageBox.StandardButton.Yes:
-                run_as_admin()
+                result = run_as_admin()
+                sys.exit(result)
             else:
                 sys.exit(1)
         else:
