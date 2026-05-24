@@ -34,6 +34,12 @@ htmlcov/
 # AI Patcher Pro
 .ai_backups/
 
+# GPT context snapshots
+Project_scan.txt
+local_diff.txt
+GPT_TASK.md
+PATCH_RESULT.md
+
 # Binaries (build locally)
 *.exe
 AI-Patcher-Pro-Linux-x64
@@ -43,3 +49,19 @@ AI-Patcher-Pro-Linux-x64
 .env
 id_ed25519
 id_dropbear
+
+
+# AI Patcher workflow state
+.ai_patcher/
+
+
+# Local deploy keys / secrets - never commit
+/deploy_key
+/deploy_key.pub
+*.pem
+*.key
+*.p8
+*.p12
+*.env
+.env
+.env.*

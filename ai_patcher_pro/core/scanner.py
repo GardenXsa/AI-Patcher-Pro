@@ -235,7 +235,8 @@ class ContextOptions:
     line_numbers: bool = True
     line_number_width: int = 4
     show_file_stats: bool = True
-    max_tokens: int = 200_000
+    # None или значение <= 0 отключает обрезание контекста.
+    max_tokens: Optional[int] = 200_000
     separator: str = "---"
     truncate_marker: str = "... (обрезано по лимиту токенов: {limit})"
     sort_by: str = "path"  # path | size | tokens
@@ -451,7 +452,7 @@ class ScannerEngine:
         if options is None:
             options = ContextOptions()
 
-        limit = options.max_tokens
+        limit = options.max_tokens if options.max_tokens and options.max_tokens > 0 else None
         parts: List[str] = []
         current_tokens = 0
 
@@ -498,7 +499,7 @@ class ScannerEngine:
                 if not fi.is_text:
                     continue
 
-                if current_tokens >= limit:
+                if limit is not None and current_tokens >= limit:
                     marker = options.truncate_marker.format(limit=limit)
                     parts.append(f"\n{marker}\n")
                     break
@@ -526,7 +527,7 @@ class ScannerEngine:
                 file_section = file_header + numbered_content + "\n"
                 est_tokens = len(file_section) // 4
 
-                if current_tokens + est_tokens > limit:
+                if limit is not None and current_tokens + est_tokens > limit:
                     # Обрезаем файл
                     remaining_tokens = limit - current_tokens
                     remaining_chars = remaining_tokens * 4 - len(file_header) - 100

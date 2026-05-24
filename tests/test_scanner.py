@@ -370,6 +370,35 @@ class TestGenerateContext(unittest.TestCase):
         context = engine.generate_context(result, options=opts)
         self.assertIn("обрезано", context)
 
+    def test_context_without_token_limit(self):
+        """max_tokens <= 0 отключает обрезание контекста."""
+        long_path = os.path.join(self.tmpdir, "long.py")
+        with open(long_path, "w", encoding="utf-8") as f:
+            f.write("start_marker = True\n")
+            for i in range(200):
+                f.write(f"value_{i} = {i}\n")
+            f.write("tail_marker = True\n")
+
+        result = self._scan()
+        engine = ScannerEngine()
+
+        limited_opts = ContextOptions(
+            include_contents=True,
+            max_tokens=10,
+            line_numbers=False,
+        )
+        limited_context = engine.generate_context(result, options=limited_opts)
+        self.assertIn("обрезано", limited_context)
+
+        full_opts = ContextOptions(
+            include_contents=True,
+            max_tokens=0,
+            line_numbers=False,
+        )
+        full_context = engine.generate_context(result, options=full_opts)
+        self.assertNotIn("обрезано", full_context)
+        self.assertIn("tail_marker = True", full_context)
+
     def test_context_languages_in_header(self):
         """Заголовок контекста содержит информацию о языках."""
         result = self._scan()

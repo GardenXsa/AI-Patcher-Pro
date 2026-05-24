@@ -9,7 +9,7 @@
 - Нумерация строк в контексте
 - Выбор файлов для включения
 - Оценка токенов в реальном времени
-- Генерация и копирование контекста
+- Генерация, копирование, сохранение контекста и GPT context pack
 """
 
 import os
@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QTabWidget,
     QMessageBox,
+    QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
@@ -45,6 +46,13 @@ from ai_patcher_pro.core.scanner import (
     ScanFilter,
     ContextOptions,
     LANG_CATEGORIES,
+)
+from ai_patcher_pro.core.gpt_context import (
+    build_local_diff_text,
+    build_task_template,
+    ensure_context_gitignore,
+    save_gpt_context_bundle,
+    write_text_file,
 )
 
 
@@ -76,6 +84,45 @@ class ScannerTab(QWidget):
         self._scan_path = ""
         self._setup_ui()
 
+
+    def set_workspace(self, workspace: str) -> None:
+        """Обновляет рабочую папку сканера из главного окна."""
+        self._scan_path = workspace or ""
+        self._scan_result = None
+
+        if hasattr(self, "lbl_path"):
+            self.lbl_path.setText(self._scan_path or "Папка не выбрана")
+
+        if hasattr(self, "btn_scan"):
+            self.btn_scan.setEnabled(bool(self._scan_path))
+
+        if hasattr(self, "btn_generate"):
+            self.btn_generate.setEnabled(False)
+        if hasattr(self, "btn_copy"):
+            self.btn_copy.setEnabled(False)
+        if hasattr(self, "btn_save"):
+            self.btn_save.setEnabled(False)
+
+        # GPT context pack кнопки включаются только после успешного сканирования,
+        # потому что им нужен актуальный ScanResult.
+        for button_name in (
+            "btn_gpt_bundle",
+            "btn_local_diff",
+            "btn_task_template",
+            "btn_gitignore",
+        ):
+            if hasattr(self, button_name):
+                getattr(self, button_name).setEnabled(False)
+
+        if hasattr(self, "txt_context"):
+            self.txt_context.clear()
+
+        if hasattr(self, "tree_files"):
+            self.tree_files.clear()
+
+        if hasattr(self, "lbl_stats"):
+            self.lbl_stats.setText("Скан не выполнен")
+
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
@@ -86,7 +133,7 @@ class ScannerTab(QWidget):
 
         self.btn_select_folder = QPushButton("Выбрать папку проекта")
         self.btn_select_folder.setObjectName("btn_workspace")
-        self.btn_select_folder.setMinimumHeight(35)
+        self.btn_select_folder.setMinimumHeight(30)
         self.btn_select_folder.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_select_folder.clicked.connect(self._select_folder)
         top_bar.addWidget(self.btn_select_folder)
@@ -97,7 +144,7 @@ class ScannerTab(QWidget):
 
         self.btn_scan = QPushButton("Сканировать")
         self.btn_scan.setObjectName("btn_success")
-        self.btn_scan.setMinimumHeight(35)
+        self.btn_scan.setMinimumHeight(30)
         self.btn_scan.setEnabled(False)
         self.btn_scan.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_scan.clicked.connect(self._start_scan)
@@ -115,7 +162,7 @@ class ScannerTab(QWidget):
         # ── Статистика ──
         self.lbl_stats = QLabel("Статистика: —")
         self.lbl_stats.setStyleSheet(
-            "color: #d4d4d4; font-size: 12px; padding: 6px; "
+            "color: #d4d4d4; font-size: 11px; padding: 4px; "
             "background-color: #1a1a1a; border-radius: 6px;"
         )
         self.lbl_stats.setWordWrap(True)
@@ -123,6 +170,11 @@ class ScannerTab(QWidget):
 
         # ── Основная область ──
         splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        splitter.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
         # ─── Левая часть: фильтры + дерево ───
         left_widget = QWidget()
@@ -132,7 +184,8 @@ class ScannerTab(QWidget):
 
         # ── Вкладки фильтров ──
         filter_tabs = QTabWidget()
-        filter_tabs.setMaximumHeight(220)
+        # Компактнее, чтобы сканер помещался на низких экранах и при Windows scaling.
+        filter_tabs.setMaximumHeight(170)
         filter_tabs.setStyleSheet(
             "QTabWidget::pane { border: 1px solid #3c3c3c; background-color: #1e1e1e; border-radius: 4px; }"
             "QTabBar::tab { background-color: #2d2d2d; color: #aaa; padding: 4px 10px; font-size: 11px; }"
@@ -417,7 +470,68 @@ class ScannerTab(QWidget):
         self.btn_copy.clicked.connect(self._copy_context)
         gen_btns.addWidget(self.btn_copy)
 
+        self.btn_save = QPushButton("Сохранить полный скан")
+        self.btn_save.setObjectName("btn_success")
+        self.btn_save.setMinimumHeight(35)
+        self.btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_save.setEnabled(False)
+        self.btn_save.clicked.connect(self._save_full_context)
+        gen_btns.addWidget(self.btn_save)
+
         right_layout.addLayout(gen_btns)
+
+
+        # GPT context pack: спокойный режим работы с ChatGPT без ручной пересылки сканов
+        gpt_group = QGroupBox("Контекст GPT")
+        gpt_group.setStyleSheet(
+            "QGroupBox { color: #3498db; font-weight: bold; border: 1px solid #3c3c3c; "
+            "border-radius: 6px; margin-top: 8px; padding: 8px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
+        )
+        gpt_layout = QVBoxLayout(gpt_group)
+
+        gpt_hint = QLabel(
+            "GitHub — основной источник кода. Эти файлы нужны для локальных изменений, "
+            "полного снимка и передачи задачи GPT."
+        )
+        gpt_hint.setWordWrap(True)
+        gpt_hint.setStyleSheet("color: #aaa; font-size: 11px; font-weight: normal;")
+        gpt_layout.addWidget(gpt_hint)
+
+        gpt_row_1 = QHBoxLayout()
+        self.btn_gpt_bundle = QPushButton("Сохранить GPT-пакет")
+        self.btn_gpt_bundle.setObjectName("btn_success")
+        self.btn_gpt_bundle.setMinimumHeight(32)
+        self.btn_gpt_bundle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_gpt_bundle.setEnabled(False)
+        self.btn_gpt_bundle.clicked.connect(self._save_gpt_bundle)
+        gpt_row_1.addWidget(self.btn_gpt_bundle)
+
+        self.btn_local_diff = QPushButton("local_diff.txt")
+        self.btn_local_diff.setMinimumHeight(32)
+        self.btn_local_diff.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_local_diff.setEnabled(False)
+        self.btn_local_diff.clicked.connect(self._save_local_diff)
+        gpt_row_1.addWidget(self.btn_local_diff)
+        gpt_layout.addLayout(gpt_row_1)
+
+        gpt_row_2 = QHBoxLayout()
+        self.btn_task_template = QPushButton("GPT_TASK.md")
+        self.btn_task_template.setMinimumHeight(32)
+        self.btn_task_template.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_task_template.setEnabled(False)
+        self.btn_task_template.clicked.connect(self._save_task_template)
+        gpt_row_2.addWidget(self.btn_task_template)
+
+        self.btn_gitignore = QPushButton("Обновить .gitignore")
+        self.btn_gitignore.setMinimumHeight(32)
+        self.btn_gitignore.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_gitignore.setEnabled(False)
+        self.btn_gitignore.clicked.connect(self._ensure_context_gitignore)
+        gpt_row_2.addWidget(self.btn_gitignore)
+        gpt_layout.addLayout(gpt_row_2)
+
+        right_layout.addWidget(gpt_group)
         splitter.addWidget(right_widget)
 
         splitter.setSizes([500, 500])
@@ -520,6 +634,11 @@ class ScannerTab(QWidget):
         self._populate_tree(result)
         self.btn_generate.setEnabled(True)
         self.btn_copy.setEnabled(True)
+        self.btn_gpt_bundle.setEnabled(True)
+        self.btn_local_diff.setEnabled(True)
+        self.btn_task_template.setEnabled(True)
+        self.btn_gitignore.setEnabled(True)
+        self.btn_save.setEnabled(True)
 
     def _populate_tree(self, result: ScanResult) -> None:
         self.tree.clear()
@@ -620,6 +739,139 @@ class ScannerTab(QWidget):
 
         # Обновляем инфо о выбранных файлах
         self._update_selected_info()
+
+
+    def _build_full_scan_context(self) -> str:
+        """Генерирует полный Project_scan.txt без обрезания по токенам."""
+        if not self._scan_result:
+            return ""
+
+        selected = self._get_selected_files()
+        options = self._build_context_options()
+        options.include_tree = True
+        options.include_contents = True
+        options.max_tokens = 0
+
+        return self._engine.generate_context(
+            self._scan_result,
+            selected_files=selected if selected else None,
+            options=options,
+        )
+
+    def _show_saved_files(self, title: str, files: dict) -> None:
+        """Показывает пользователю список сохранённых файлов."""
+        lines = [f"{name}: {path}" for name, path in files.items()]
+        message = "\n".join(lines)
+        self.txt_context.setPlainText(message)
+        self.btn_copy.setEnabled(True)
+        QMessageBox.information(self, title, message)
+
+    def _save_gpt_bundle(self) -> None:
+        """Создаёт Project_scan.txt, local_diff.txt, GPT_TASK.md, PATCH_RESULT.md и .gitignore."""
+        if not self._scan_result:
+            return
+
+        try:
+            scan_context = self._build_full_scan_context()
+            files = save_gpt_context_bundle(
+                self._scan_result.root_path,
+                scan_context=scan_context,
+            )
+            self._show_saved_files("GPT-пакет сохранён", files)
+        except OSError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить GPT-пакет:\n{e}")
+
+    def _save_local_diff(self) -> None:
+        """Сохраняет только local_diff.txt."""
+        root_path = self._scan_result.root_path if self._scan_result else self._scan_path
+        if not root_path:
+            return
+
+        try:
+            path = write_text_file(root_path, "local_diff.txt", build_local_diff_text(root_path))
+            self._show_saved_files("local_diff.txt сохранён", {"local_diff.txt": path})
+        except OSError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить local_diff.txt:\n{e}")
+
+    def _save_task_template(self) -> None:
+        """Создаёт GPT_TASK.md, не затирая существующий файл с заметками."""
+        root_path = self._scan_result.root_path if self._scan_result else self._scan_path
+        if not root_path:
+            return
+
+        project_name = os.path.basename(os.path.normpath(root_path)) or root_path
+        path = os.path.join(root_path, "GPT_TASK.md")
+        if os.path.exists(path):
+            QMessageBox.information(
+                self,
+                "GPT_TASK.md уже существует",
+                f"Файл уже есть и не был перезаписан:\n{path}",
+            )
+            return
+
+        try:
+            path = write_text_file(root_path, "GPT_TASK.md", build_task_template(project_name))
+            self._show_saved_files("GPT_TASK.md создан", {"GPT_TASK.md": path})
+        except OSError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить GPT_TASK.md:\n{e}")
+
+    def _ensure_context_gitignore(self) -> None:
+        """Добавляет временные GPT-файлы в .gitignore."""
+        root_path = self._scan_result.root_path if self._scan_result else self._scan_path
+        if not root_path:
+            return
+
+        try:
+            path = ensure_context_gitignore(root_path)
+            self._show_saved_files(".gitignore обновлён", {".gitignore": path})
+        except OSError as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось обновить .gitignore:\n{e}")
+
+    def _save_full_context(self) -> None:
+        """Сохраняет полный контекст в файл без обрезания по лимиту токенов."""
+        if not self._scan_result:
+            return
+
+        selected = self._get_selected_files()
+        options = self._build_context_options()
+        # 0 отключает лимит в ScannerEngine.generate_context().
+        options.max_tokens = 0
+
+        project_name = os.path.basename(os.path.normpath(self._scan_result.root_path)) or "project"
+        default_path = os.path.join(
+            self._scan_result.root_path,
+            f"{project_name}_scan_full.txt",
+        )
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить полный скан",
+            default_path,
+            "Text files (*.txt);;Markdown files (*.md);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        try:
+            context = self._engine.generate_context(
+                self._scan_result,
+                selected_files=selected if selected else None,
+                options=options,
+            )
+            with open(file_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(context)
+
+            QMessageBox.information(
+                self,
+                "Скан сохранён",
+                f"Полный скан сохранён без обрезания:\n{file_path}",
+            )
+        except OSError as e:
+            QMessageBox.critical(
+                self,
+                "Ошибка сохранения",
+                f"Не удалось сохранить скан:\n{e}",
+            )
 
     def _update_selected_info(self) -> None:
         if not self._scan_result:

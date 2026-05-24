@@ -14,6 +14,20 @@ class TestExtractAllJson(unittest.TestCase):
         self.assertEqual(len(result["operations"]), 1)
         self.assertEqual(result["operations"][0]["action"], "replace")
 
+
+
+    def test_markdown_json_block_with_chatgpt_attributes(self):
+        """JSON внутри markdown блока с атрибутами после языка."""
+        fence = "`" * 3
+        raw = (
+            f'Вот патч:\n{fence}json id="abc123"\n'
+            '[{"action": "replace", "path": "test.py", "search": "old", "content": "new"}]\n'
+            f'{fence}'
+        )
+        result = extract_all_json(raw)
+        self.assertEqual(len(result["operations"]), 1)
+        self.assertEqual(result["operations"][0]["path"], "test.py")
+
     def test_raw_json_array(self):
         """JSON массив без markdown обёртки."""
         raw = '[{"action": "replace", "path": "test.py", "search": "old", "content": "new"}]'
